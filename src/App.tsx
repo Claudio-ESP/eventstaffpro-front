@@ -1,17 +1,29 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import Azafato from './pages/Azafato'
 import Jefa from './pages/Jefa'
 
 type Tab = 'azafato' | 'jefa'
 
-// Staff mode: URL contains both staffId and token — show only Azafato, no tabs
-const isStaffMode = (() => {
-  const p = new URLSearchParams(window.location.search)
-  return p.has('staffId') && p.has('token')
-})()
+function getQueryParam(params: URLSearchParams, keys: string[]) {
+  for (const k of keys) {
+    const v = params.get(k)
+    if (v && v.trim() !== '') return v.trim()
+  }
+  return ''
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('azafato')
+
+  const { isStaffMode } = useMemo(() => {
+    const p = new URLSearchParams(window.location.search)
+
+    // Acepta variantes por si algún link se genera con distinta capitalización
+    const staffId = getQueryParam(p, ['staffId', 'staffid', 'staffID', 'staff'])
+    const token = getQueryParam(p, ['token', 't', 'staffToken'])
+
+    return { isStaffMode: Boolean(staffId && token) }
+  }, [])
 
   if (isStaffMode) {
     return (
