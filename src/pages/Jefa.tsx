@@ -24,6 +24,8 @@ export default function Jefa() {
   const [linksData, setLinksData] = useState<EventLinksResponse | null>(null)
   const [linksError, setLinksError] = useState<string | null>(null)
   const [copiedRows, setCopiedRows] = useState<Record<number, boolean>>({})
+  const [copiedAll, setCopiedAll] = useState(false)
+  const [waBlockedWarning, setWaBlockedWarning] = useState(false)
 
   async function handleRefresh() {
     if (!token) {
@@ -61,6 +63,61 @@ export default function Jefa() {
     } finally {
       setLinksLoading(false)
     }
+  }
+
+  async function handleCopyAll() {
+    if (!linksData) return
+    const items = linksData.linksPorStaff
+    const withLink = items.filter(it => it.staffTokenPresent && it.link)
+    const withoutLink = items.filter(it => !it.staffTokenPresent || !it.link)
+
+    const lines: string[] = [`Evento ${eventId}`]
+    for (const it of withLink) {
+      lines.push(`- ${it.name || it.staffId} (${it.shiftId}): ${it.link}`)
+    }
+    if (withoutLink.length > 0) {
+      const names = withoutLink.map(it => it.name || it.staffId).join(', ')
+      lines.push(`\nSin staffToken: ${names}`)
+    }
+
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'))
+      setCopiedAll(true)
+      setTimeout(() => setCopiedAll(false), 1500)
+    } catch {
+      // clipboard unavailable
+    }
+  }
+
+  function handleDownloadCsv() {
+    if (!linksData) return
+    const header = 'staffId,name,phone,shiftId,status,link'
+    const rows = linksData.linksPorStaff.map(it =>
+      [it.staffId, it.name, it.phone, it.shiftId, it.status, it.link]
+        .map(v => `"${String(v ?? '').replace(/"/g, '""')}"`)
+        .join(',')
+    )
+    const csv = [header, ...rows].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `event-links-${eventId}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function handleOpenAllWhatsApp() {
+    if (!linksData) return
+    const items = linksData.linksPorStaff.filter(it => it.waLink)
+    if (items.length === 0) return
+    setWaBlockedWarning(false)
+    items.forEach((it, idx) => {
+      setTimeout(() => {
+        const win = window.open(it.waLink!, '_blank')
+        if (win === null) setWaBlockedWarning(true)
+      }, idx * 300)
+    })
   }
 
   async function handleCopy(link: string, index: number) {
@@ -179,14 +236,43 @@ export default function Jefa() {
       <section style={styles.card}>
         <div style={styles.linksHeader}>
           <h3 style={{ ...styles.sectionTitle, margin: 0 }}>Links para azafatos</h3>
-          <button
-            style={styles.button}
-            onClick={handleLoadLinks}
-            disabled={linksLoading}
-          >
-            {linksLoading ? 'Cargando...' : 'Cargar links'}
-          </button>
+          <div style={styles.linksActions}>
+            <button
+              style={styles.button}
+              onClick={handleLoadLinks}
+              disabled={linksLoading}
+            >
+              {linksLoading ? 'Cargando...' : 'Cargar links'}
+            </button>
+            <button
+              style={copiedAll ? styles.copyBtnDone : styles.copyBtn}
+              onClick={handleCopyAll}
+              disabled={linksLoading || !linksData || linksData.linksPorStaff.length === 0 || copiedAll}
+            >
+              {copiedAll ? 'Copiado ✅' : 'Copiar todos (WhatsApp)'}
+            </button>
+            <button
+              style={styles.waBulkBtn}
+              onClick={handleOpenAllWhatsApp}
+              disabled={linksLoading || !linksData || !linksData.linksPorStaff.some(it => it.waLink)}
+            >
+              Abrir WhatsApp para todos
+            </button>
+            <button
+              style={styles.csvBtn}
+              onClick={handleDownloadCsv}
+              disabled={!linksData || linksData.linksPorStaff.length === 0}
+            >
+              Descargar CSV
+            </button>
+          </div>
         </div>
+
+        {waBlockedWarning && (
+          <div style={styles.waWarning}>
+            ⚠️ Tu navegador puede bloquear múltiples pestañas. Usa el botón individual por fila.
+          </div>
+        )}
 
         {linksError && (
           <div style={styles.errorBox}>
@@ -203,11 +289,14 @@ export default function Jefa() {
               <table style={styles.table}>
                 <thead>
                   <tr>
+                    <th style={styles.th}>Nombre</th>
+                    <th style={styles.th}>Teléfono</th>
                     <th style={styles.th}>Staff ID</th>
                     <th style={styles.th}>Turno</th>
                     <th style={styles.th}>Estado</th>
                     <th style={styles.th}>Link</th>
-                    <th style={styles.th}>Acción</th>
+                    <th style={styles.th}>WhatsApp</th>
+                    <th style={styles.th}>Copiar</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -215,6 +304,8 @@ export default function Jefa() {
                     const missing = !item.staffTokenPresent || !item.link
                     return (
                       <tr key={i} style={i % 2 === 0 ? styles.trEven : styles.trOdd}>
+                        <td style={styles.td}>{item.name || '—'}</td>
+                        <td style={styles.td}>{item.phone || '—'}</td>
                         <td style={styles.td}>{item.staffId}</td>
                         <td style={styles.td}>{item.shiftId}</td>
                         <td style={styles.td}>
@@ -222,7 +313,7 @@ export default function Jefa() {
                             {STATUS_LABELS[item.status] ?? item.status}
                           </span>
                         </td>
-                        <td style={{ ...styles.td, maxWidth: 340 }}>
+                        <td style={{ ...styles.td, maxWidth: 300 }}>
                           {missing ? (
                             <span style={styles.missingToken}>Falta staffToken</span>
                           ) : (
@@ -231,6 +322,20 @@ export default function Jefa() {
                               readOnly
                               value={item.link}
                             />
+                          )}
+                        </td>
+                        <td style={styles.td}>
+                          {item.waLink ? (
+                            <button
+                              style={styles.waBtn}
+                              onClick={() => window.open(item.waLink!, '_blank')}
+                            >
+                              WhatsApp
+                            </button>
+                          ) : (
+                            <button style={styles.waBtn} disabled>
+                              {missing ? 'Falta token' : 'Sin link WA'}
+                            </button>
                           )}
                         </td>
                         <td style={styles.td}>
@@ -415,6 +520,23 @@ const styles: Record<string, React.CSSProperties> = {
     flexWrap: 'wrap',
     gap: 12,
   },
+  linksActions: {
+    display: 'flex',
+    gap: 8,
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  csvBtn: {
+    padding: '5px 14px',
+    background: '#374151',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 6,
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
   linksHint: {
     fontSize: 13,
     color: '#6b7280',
@@ -459,5 +581,36 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     color: '#dc2626',
     fontStyle: 'italic',
+  },
+  waBulkBtn: {
+    padding: '5px 14px',
+    background: '#16a34a',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 6,
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  waBtn: {
+    padding: '4px 12px',
+    background: '#25d366',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 6,
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  waWarning: {
+    background: '#fffbeb',
+    border: '1px solid #fcd34d',
+    borderRadius: 8,
+    padding: '8px 14px',
+    fontSize: 13,
+    color: '#92400e',
+    marginBottom: 12,
   },
 }

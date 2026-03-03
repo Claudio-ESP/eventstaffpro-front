@@ -104,6 +104,9 @@ export interface EventLinkItem {
   status: string
   staffTokenPresent: boolean
   link: string
+  name?: string
+  phone?: string
+  waLink?: string
 }
 
 export interface EventLinksResponse {
