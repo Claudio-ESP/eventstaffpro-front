@@ -15,6 +15,67 @@ function formatDate(dateStr: string): string {
   }
 }
 
+/** Parse "YYYY-MM-DD" + "HH:MM" into a local Date. Returns null if invalid. */
+function parseDateTimeLocal(date: string, time: string): Date | null {
+  if (!date || !time) return null
+  const [y, mo, d] = date.split('-').map(Number)
+  const [h, m] = time.split(':').map(Number)
+  if ([y, mo, d, h].some(isNaN)) return null
+  const dt = new Date(y, mo - 1, d, h, m ?? 0, 0)
+  return isNaN(dt.getTime()) ? null : dt
+}
+
+/** Format a Date to "YYYYMMDDTHHmmssZ" (UTC) for Google Calendar / ICS. */
+function toCalDate(d: Date): string {
+  return d.toISOString().replace(/-|:/g, '').replace(/\.\d{3}/, '')
+}
+
+function buildGCalUrl(item: ScheduleItem, staffId: string): string {
+  const start = parseDateTimeLocal(item.date, item.startTime)!
+  const endRaw = item.endTime ? parseDateTimeLocal(item.date, item.endTime) : null
+  const end = endRaw ?? new Date(start.getTime() + 4 * 60 * 60 * 1000)
+  const params = new URLSearchParams({
+    action: 'TEMPLATE',
+    text: `${item.eventName} (Turno)`,
+    dates: `${toCalDate(start)}/${toCalDate(end)}`,
+    details: `StaffId: ${staffId}\nLink: ${window.location.href}`,
+  })
+  if (item.location) params.set('location', item.location)
+  return `https://www.google.com/calendar/render?${params.toString()}`
+}
+
+function downloadIcs(item: ScheduleItem, staffId: string): void {
+  const start = parseDateTimeLocal(item.date, item.startTime)!
+  const endRaw = item.endTime ? parseDateTimeLocal(item.date, item.endTime) : null
+  const end = endRaw ?? new Date(start.getTime() + 4 * 60 * 60 * 1000)
+  const uid = `${staffId}-${item.eventName}-${item.date}-${item.startTime}@eventstaffpro`
+    .replace(/\s+/g, '-')
+  const desc = `StaffId: ${staffId}\\nLink: ${window.location.href}`
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//EventStaffPro//ES',
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${toCalDate(new Date())}`,
+    `DTSTART:${toCalDate(start)}`,
+    `DTEND:${toCalDate(end)}`,
+    `SUMMARY:${item.eventName} - Turno`,
+    item.location ? `LOCATION:${item.location}` : null,
+    `DESCRIPTION:${desc}`,
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].filter(Boolean).join('\r\n')
+
+  const blob = new Blob([lines], { type: 'text/calendar;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `eventstaffpro_${staffId}_${item.date}_${item.startTime.replace(':', '')}.ics`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export default function Azafato() {
   const [eventId, setEventId] = useState('EVT001')
   const [shiftId, setShiftId] = useState('T1')
@@ -193,18 +254,41 @@ export default function Azafato() {
             <p style={styles.hint}>No tienes turnos asignados.</p>
           ) : (
             <div style={styles.scheduleGrid}>
-              {scheduleData.map((item, i) => (
-                <div key={i} style={styles.shiftCard}>
-                  <p style={styles.shiftEvent}>{item.eventName}</p>
-                  <p style={styles.shiftTime}>
-                    {item.startTime} – {item.endTime}
-                  </p>
-                  <p style={styles.shiftDate}>{formatDate(item.date)}</p>
-                  {item.location && (
-                    <p style={styles.shiftLocation}>📍 {item.location}</p>
-                  )}
-                </div>
-              ))}
+              {scheduleData.map((item, i) => {
+                const valid = !!parseDateTimeLocal(item.date, item.startTime)
+                return (
+                  <div key={i} style={styles.shiftCard}>
+                    <p style={styles.shiftEvent}>{item.eventName}</p>
+                    <p style={styles.shiftTime}>
+                      {item.startTime} – {item.endTime}
+                    </p>
+                    <p style={styles.shiftDate}>{formatDate(item.date)}</p>
+                    {item.location && (
+                      <p style={styles.shiftLocation}>📍 {item.location}</p>
+                    )}
+                    <div style={styles.calBtns}>
+                      {valid ? (
+                        <>
+                          <button
+                            style={styles.calBtn}
+                            onClick={() => window.open(buildGCalUrl(item, staffId), '_blank')}
+                          >
+                            📅 Google Calendar
+                          </button>
+                          <button
+                            style={styles.calBtn}
+                            onClick={() => downloadIcs(item, staffId)}
+                          >
+                            ⬇️ .ics
+                          </button>
+                        </>
+                      ) : (
+                        <span style={styles.calIncomplete}>Horario incompleto</span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           )
         )}
@@ -382,5 +466,27 @@ const styles: Record<string, React.CSSProperties> = {
     margin: '4px 0 0',
     fontSize: 13,
     color: '#374151',
+  },
+  calBtns: {
+    display: 'flex',
+    gap: 6,
+    marginTop: 10,
+    flexWrap: 'wrap',
+  },
+  calBtn: {
+    padding: '5px 10px',
+    background: '#fff',
+    border: '1px solid #c7d7fe',
+    borderRadius: 6,
+    fontSize: 12,
+    fontWeight: 600,
+    color: '#4f46e5',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  calIncomplete: {
+    fontSize: 12,
+    color: '#9ca3af',
+    fontStyle: 'italic',
   },
 }

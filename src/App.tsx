@@ -4,8 +4,27 @@ import Jefa from './pages/Jefa'
 
 type Tab = 'azafato' | 'jefa'
 
+// Staff mode: URL contains both staffId and token — show only Azafato, no tabs
+const isStaffMode = (() => {
+  const p = new URLSearchParams(window.location.search)
+  return p.has('staffId') && p.has('token')
+})()
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('azafato')
+
+  if (isStaffMode) {
+    return (
+      <div style={styles.root}>
+        <header style={styles.header}>
+          <span style={styles.logo}>EventStaffPro</span>
+        </header>
+        <main style={styles.main}>
+          <Azafato />
+        </main>
+      </div>
+    )
+  }
 
   return (
     <div style={styles.root}>
