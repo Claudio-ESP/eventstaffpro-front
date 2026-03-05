@@ -49,29 +49,31 @@ export async function postCheckin(payload: CheckinPayload): Promise<CheckinRespo
 }
 
 export interface ScheduleItem {
-  eventName: string
-  location: string
-  date: string
-  startTime: string
-  endTime: string
+  eventId: string
+  eventName?: string
+  location?: string | null
+  shiftId: string
+  shiftName?: string
+  startsAt?: string | null
+  endsAt?: string | null
+  status: string
+  statusTs?: string | null
 }
 
 export interface StaffScheduleResponse {
   ok: boolean
-  staffId: string
+  staffId?: string
   schedule: ScheduleItem[]
 }
 
 export async function getStaffSchedule(
-  token: string,
-  staffId: string
+  staffId: string,
+  staffToken: string
 ): Promise<StaffScheduleResponse> {
-  const url = `${ADMIN_URL}?action=staff-schedule&staffId=${encodeURIComponent(staffId)}`
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+  const res = await fetch(`${API_BASE}/staff-schedule`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ staffId, staffToken }),
   })
 
   let data: unknown
@@ -134,6 +136,123 @@ export async function getEventLinks(
   }
 
   return data as EventLinksResponse
+}
+
+export interface EventInfo {
+  eventid: string
+  name: string | null
+  location: string | null
+}
+
+export interface EventInfoResponse {
+  ok: boolean
+  event: EventInfo
+}
+
+export async function getEventInfo(eventId: string): Promise<EventInfoResponse> {
+  const res = await fetch(`${API_BASE}/event-info`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ eventId }),
+  })
+
+  let data: unknown
+  try {
+    data = await res.json()
+  } catch {
+    data = { error: await res.text().catch(() => 'Respuesta no legible') }
+  }
+
+  if (!res.ok) {
+    const d = data as Record<string, unknown>
+    const msg = d?.error ?? `Error ${res.status}: ${res.statusText}`
+    const err = new Error(String(msg)) as Error & { status: number }
+    err.status = res.status
+    throw err
+  }
+
+  return data as EventInfoResponse
+}
+
+export interface AdminResponse {
+  ok: boolean
+  [key: string]: unknown
+}
+
+async function adminPost(token: string, body: Record<string, unknown>): Promise<AdminResponse> {
+  const res = await fetch(ADMIN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  })
+  let data: unknown
+  try { data = await res.json() }
+  catch { data = { error: await res.text().catch(() => 'Respuesta no legible') } }
+  if (!res.ok) {
+    const msg = (data as Record<string, unknown>)?.error ?? `Error ${res.status}: ${res.statusText}`
+    throw new Error(String(msg))
+  }
+  return data as AdminResponse
+}
+
+export async function adminUpsertEvent(
+  token: string,
+  payload: { eventId: string; name: string; location?: string }
+): Promise<AdminResponse> {
+  return adminPost(token, { action: 'upsert-event', ...payload })
+}
+
+export async function adminUpsertShift(
+  token: string,
+  payload: { eventId: string; shiftId: string; shiftName: string; startsAt?: string; endsAt?: string }
+): Promise<AdminResponse> {
+  return adminPost(token, { action: 'upsert-shift', ...payload })
+}
+
+export async function adminAssignStaff(
+  token: string,
+  payload: { eventId: string; shiftId: string; staffId: string }
+): Promise<AdminResponse> {
+  return adminPost(token, { action: 'assign-staff', ...payload })
+}
+
+export interface AdminStaff {
+  staffid: string
+  name: string
+  phone: string
+  agencyid?: string
+  stafftoken?: string
+}
+
+export interface AdminShift {
+  shiftid: string
+  eventid?: string
+  name: string | null
+  starts_at: string | null
+  ends_at: string | null
+}
+
+export async function adminUpsertStaff(
+  token: string,
+  payload: { staffId?: string; name: string; phone: string; agencyId?: string }
+): Promise<AdminResponse> {
+  return adminPost(token, { action: 'upsert-staff', ...payload })
+}
+
+// TODO backend: action="list-staff" → { staff: AdminStaff[] }
+export async function adminListStaff(token: string): Promise<AdminStaff[]> {
+  const res = await adminPost(token, { action: 'list-staff' })
+  return ((res.staff ?? res.rows ?? res.data ?? []) as AdminStaff[])
+}
+
+// TODO backend: action="list-shifts" with { eventId } → { shifts: AdminShift[] }
+export async function adminListShifts(token: string, eventId: string): Promise<AdminShift[]> {
+  const res = await adminPost(token, { action: 'list-shifts', eventId })
+  return ((res.shifts ?? res.rows ?? res.data ?? []) as AdminShift[])
 }
 
 export async function getEventStatus(adminToken: string, eventId: string) {

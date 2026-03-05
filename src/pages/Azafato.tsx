@@ -1,81 +1,36 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { postCheckin, getStaffSchedule, CheckinPayload, ScheduleItem } from '../api'
 import { supabase } from '../supabase'
 
 type Status = CheckinPayload['status']
 
-function formatDate(dateStr: string): string {
+const STATUS_LABELS: Record<string, string> = {
+  DESPIERTO: 'Despierto',
+  DE_CAMINO: 'De camino',
+  EN_SITIO: 'En sitio',
+}
+
+const STATUS_COLORS: Record<string, string> = {
+  DESPIERTO: '#2563eb',
+  DE_CAMINO: '#d97706',
+  EN_SITIO:  '#16a34a',
+  SIN_ESTADO: '#6b7280',
+}
+
+function fmtMadrid(iso: string | null | undefined, opts: Intl.DateTimeFormatOptions): string {
+  if (!iso) return '—'
   try {
-    return new Date(dateStr).toLocaleDateString('es-ES', {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    })
+    return new Intl.DateTimeFormat('es-ES', { timeZone: 'Europe/Madrid', ...opts }).format(new Date(iso))
   } catch {
-    return dateStr
+    return iso
   }
 }
-
-/** Parse "YYYY-MM-DD" + "HH:MM" into a local Date. Returns null if invalid. */
-function parseDateTimeLocal(date: string, time: string): Date | null {
-  if (!date || !time) return null
-  const [y, mo, d] = date.split('-').map(Number)
-  const [h, m] = time.split(':').map(Number)
-  if ([y, mo, d, h].some(isNaN)) return null
-  const dt = new Date(y, mo - 1, d, h, m ?? 0, 0)
-  return isNaN(dt.getTime()) ? null : dt
-}
-
-/** Format a Date to "YYYYMMDDTHHmmssZ" (UTC) for Google Calendar / ICS. */
-function toCalDate(d: Date): string {
-  return d.toISOString().replace(/-|:/g, '').replace(/\.\d{3}/, '')
-}
-
-function buildGCalUrl(item: ScheduleItem, staffId: string): string {
-  const start = parseDateTimeLocal(item.date, item.startTime)!
-  const endRaw = item.endTime ? parseDateTimeLocal(item.date, item.endTime) : null
-  const end = endRaw ?? new Date(start.getTime() + 4 * 60 * 60 * 1000)
-  const params = new URLSearchParams({
-    action: 'TEMPLATE',
-    text: `${item.eventName} (Turno)`,
-    dates: `${toCalDate(start)}/${toCalDate(end)}`,
-    details: `StaffId: ${staffId}\nLink: ${window.location.href}`,
-  })
-  if (item.location) params.set('location', item.location)
-  return `https://www.google.com/calendar/render?${params.toString()}`
-}
-
-function downloadIcs(item: ScheduleItem, staffId: string): void {
-  const start = parseDateTimeLocal(item.date, item.startTime)!
-  const endRaw = item.endTime ? parseDateTimeLocal(item.date, item.endTime) : null
-  const end = endRaw ?? new Date(start.getTime() + 4 * 60 * 60 * 1000)
-  const uid = `${staffId}-${item.eventName}-${item.date}-${item.startTime}@eventstaffpro`
-    .replace(/\s+/g, '-')
-  const desc = `StaffId: ${staffId}\\nLink: ${window.location.href}`
-  const lines = [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//EventStaffPro//ES',
-    'BEGIN:VEVENT',
-    `UID:${uid}`,
-    `DTSTAMP:${toCalDate(new Date())}`,
-    `DTSTART:${toCalDate(start)}`,
-    `DTEND:${toCalDate(end)}`,
-    `SUMMARY:${item.eventName} - Turno`,
-    item.location ? `LOCATION:${item.location}` : null,
-    `DESCRIPTION:${desc}`,
-    'END:VEVENT',
-    'END:VCALENDAR',
-  ].filter(Boolean).join('\r\n')
-
-  const blob = new Blob([lines], { type: 'text/calendar;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `eventstaffpro_${staffId}_${item.date}_${item.startTime.replace(':', '')}.ics`
-  a.click()
-  URL.revokeObjectURL(url)
-}
+const fmtDateTime = (iso: string | null | undefined) =>
+  fmtMadrid(iso, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+const fmtTime = (iso: string | null | undefined) =>
+  fmtMadrid(iso, { hour: '2-digit', minute: '2-digit' })
+const fmtDate = (iso: string | null | undefined) =>
+  fmtMadrid(iso, { weekday: 'short', day: 'numeric', month: 'short' })
 
 export default function Azafato() {
   const [eventId, setEventId] = useState('EVT001')
@@ -85,6 +40,8 @@ export default function Azafato() {
 
   const [checkinLoading, setCheckinLoading] = useState(false)
   const [checkinResult, setCheckinResult] = useState<{ ok: boolean; data: unknown } | null>(null)
+  const [checkinSuccess, setCheckinSuccess] = useState<Status | null>(null)
+  const checkinSuccessTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [scheduleLoading, setScheduleLoading] = useState(false)
   const [scheduleData, setScheduleData] = useState<ScheduleItem[] | null>(null)
@@ -153,11 +110,14 @@ useEffect(() => {
     }
     setCheckinLoading(true)
     setCheckinResult(null)
+    setCheckinSuccess(null)
     try {
       const payload: CheckinPayload = { eventId, shiftId, staffId, staffToken: token, status }
       console.log('CHECKIN payload', payload)
-      const data = await postCheckin(payload)
-      setCheckinResult({ ok: true, data })
+      await postCheckin(payload)
+      setCheckinSuccess(status)
+      if (checkinSuccessTimer.current) clearTimeout(checkinSuccessTimer.current)
+      checkinSuccessTimer.current = setTimeout(() => setCheckinSuccess(null), 3500)
     } catch (err: unknown) {
       const error = err as Error & { data?: unknown }
       setCheckinResult({ ok: false, data: error.data ?? { error: error.message } })
@@ -175,7 +135,7 @@ useEffect(() => {
     setScheduleError(null)
     setScheduleData(null)
     try {
-      const res = await getStaffSchedule(token, staffId)
+      const res = await getStaffSchedule(staffId, token)
       setScheduleData(res.schedule)
     } catch (err: unknown) {
       setScheduleError((err as Error).message)
@@ -266,10 +226,16 @@ useEffect(() => {
 
         {checkinLoading && <p style={styles.hint}>Enviando...</p>}
 
-        {checkinResult && (
-          <div style={{ ...styles.resultBox, borderColor: checkinResult.ok ? '#16a34a' : '#dc2626' }}>
-            <p style={{ color: checkinResult.ok ? '#16a34a' : '#dc2626', fontWeight: 700, margin: '0 0 8px' }}>
-              {checkinResult.ok ? '✓ Check-in enviado correctamente' : '✗ Error al enviar'}
+        {checkinSuccess && (
+          <div style={styles.checkinSuccessBox}>
+            ✔ Check-in enviado · {STATUS_LABELS[checkinSuccess] ?? checkinSuccess}
+          </div>
+        )}
+
+        {checkinResult && !checkinResult.ok && (
+          <div style={{ ...styles.resultBox, borderColor: '#dc2626' }}>
+            <p style={{ color: '#dc2626', fontWeight: 700, margin: '0 0 8px' }}>
+              ✗ Error al enviar
             </p>
             <pre style={styles.pre}>{JSON.stringify(checkinResult.data, null, 2)}</pre>
           </div>
@@ -297,45 +263,52 @@ useEffect(() => {
 
         {scheduleData !== null && (
           scheduleData.length === 0 ? (
-            <p style={styles.hint}>No tienes turnos asignados.</p>
+            <p style={styles.emptyMsg}>Aún no tienes turnos asignados.</p>
           ) : (
-            <div style={styles.scheduleGrid}>
-              {scheduleData.map((item, i) => {
-                const valid = !!parseDateTimeLocal(item.date, item.startTime)
+            <>
+              {/* Banner turno actual */}
+              {(() => {
+                const cur = scheduleData.find(it => it.eventId === eventId && it.shiftId === shiftId)
+                if (!cur) return null
                 return (
-                  <div key={i} style={styles.shiftCard}>
-                    <p style={styles.shiftEvent}>{item.eventName}</p>
-                    <p style={styles.shiftTime}>
-                      {item.startTime} – {item.endTime}
-                    </p>
-                    <p style={styles.shiftDate}>{formatDate(item.date)}</p>
-                    {item.location && (
-                      <p style={styles.shiftLocation}>📍 {item.location}</p>
-                    )}
-                    <div style={styles.calBtns}>
-                      {valid ? (
-                        <>
-                          <button
-                            style={styles.calBtn}
-                            onClick={() => window.open(buildGCalUrl(item, staffId), '_blank')}
-                          >
-                            📅 Google Calendar
-                          </button>
-                          <button
-                            style={styles.calBtn}
-                            onClick={() => downloadIcs(item, staffId)}
-                          >
-                            ⬇️ .ics
-                          </button>
-                        </>
-                      ) : (
-                        <span style={styles.calIncomplete}>Horario incompleto</span>
-                      )}
-                    </div>
+                  <div style={styles.currentBanner}>
+                    <strong>Ahora:</strong>{' '}
+                    {cur.eventName ?? cur.eventId} · {cur.shiftName ?? cur.shiftId} ·{' '}
+                    <span style={{ ...styles.statusBadgeSm, background: STATUS_COLORS[cur.status] ?? '#6b7280' }}>
+                      {cur.status}
+                    </span>
+                    {(cur.startsAt || cur.endsAt) && ` · ${fmtTime(cur.startsAt)} – ${fmtTime(cur.endsAt)}`}
                   </div>
                 )
-              })}
-            </div>
+              })()}
+
+              {/* Tarjetas */}
+              <div style={styles.cardsGrid}>
+                {scheduleData.map((item, i) => {
+                  const isCurrent = item.eventId === eventId && item.shiftId === shiftId
+                  const hasTime = !!(item.startsAt || item.endsAt)
+                  return (
+                    <div key={i} style={{ ...styles.shiftCard, ...(isCurrent ? styles.shiftCardCurrent : {}) }}>
+                      <div style={styles.cardTop}>
+                        <span style={{ ...styles.statusBadge, background: STATUS_COLORS[item.status] ?? '#6b7280' }}>
+                          {item.status}
+                        </span>
+                      </div>
+                      <p style={styles.cardEventName}>{item.eventName ?? item.eventId}</p>
+                      {item.location && <p style={styles.cardLocation}>📍 {item.location}</p>}
+                      <p style={styles.cardShiftName}>{item.shiftName ?? item.shiftId}</p>
+                      <p style={styles.cardDate}>{fmtDate(item.startsAt)}</p>
+                      {hasTime ? (
+                        <p style={styles.cardTime}>{fmtTime(item.startsAt)} – {fmtTime(item.endsAt)}</p>
+                      ) : (
+                        <p style={styles.cardTimePending}>Horario pendiente</p>
+                      )}
+                      {item.statusTs && <p style={styles.cardUpdated}>Actualizado: {fmtDateTime(item.statusTs)}</p>}
+                    </div>
+                  )
+                })}
+              </div>
+            </>
           )
         )}
       </section>
@@ -432,6 +405,16 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
     margin: '12px 0 0',
   },
+  checkinSuccessBox: {
+    marginTop: 16,
+    background: '#f0fdf4',
+    border: '1.5px solid #16a34a',
+    borderRadius: 8,
+    padding: '14px 16px',
+    color: '#15803d',
+    fontWeight: 700,
+    fontSize: 15,
+  },
   resultBox: {
     marginTop: 16,
     border: '1.5px solid',
@@ -475,65 +458,107 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
     marginBottom: 8,
   },
-  scheduleGrid: {
+  emptyMsg: {
+    color: '#6b7280',
+    fontSize: 14,
+    fontStyle: 'italic',
+    padding: '8px 0',
+  },
+  currentBanner: {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    background: '#eff6ff',
+    border: '1px solid #bfdbfe',
+    borderRadius: 8,
+    padding: '10px 14px',
+    fontSize: 14,
+    color: '#1e40af',
+    marginBottom: 16,
+  },
+  cardsGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
     gap: 16,
   },
   shiftCard: {
-    background: '#f8faff',
-    border: '1px solid #c7d7fe',
-    borderLeft: '4px solid #4f46e5',
-    borderRadius: 10,
-    padding: '16px 18px',
+    background: '#f9fafb',
+    border: '1px solid #e5e7eb',
+    borderRadius: 12,
+    padding: '18px 20px',
     display: 'flex',
     flexDirection: 'column',
-    gap: 4,
+    gap: 2,
   },
-  shiftEvent: {
+  shiftCardCurrent: {
+    background: '#eff6ff',
+    border: '1px solid #93c5fd',
+    borderLeft: '4px solid #2563eb',
+  },
+  cardTop: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    marginBottom: 8,
+  },
+  cardEventName: {
     margin: 0,
     fontSize: 16,
     fontWeight: 700,
-    color: '#1e1b4b',
+    color: '#111827',
   },
-  shiftTime: {
-    margin: 0,
-    fontSize: 20,
-    fontWeight: 800,
-    color: '#4f46e5',
-    letterSpacing: '-0.02em',
-  },
-  shiftDate: {
+  cardShiftName: {
     margin: 0,
     fontSize: 13,
     color: '#6b7280',
+    marginBottom: 6,
   },
-  shiftLocation: {
-    margin: '4px 0 0',
+  cardDate: {
+    margin: 0,
+    fontSize: 13,
+    fontWeight: 600,
+    color: '#374151',
+    textTransform: 'capitalize',
+  },
+  cardTime: {
+    margin: 0,
+    fontSize: 22,
+    fontWeight: 800,
+    color: '#2563eb',
+    letterSpacing: '-0.02em',
+    lineHeight: 1.2,
+  },
+  cardTimePending: {
+    margin: 0,
+    fontSize: 13,
+    color: '#9ca3af',
+    fontStyle: 'italic',
+  },
+  cardLocation: {
+    margin: '6px 0 0',
     fontSize: 13,
     color: '#374151',
   },
-  calBtns: {
-    display: 'flex',
-    gap: 6,
-    marginTop: 10,
-    flexWrap: 'wrap',
-  },
-  calBtn: {
-    padding: '5px 10px',
-    background: '#fff',
-    border: '1px solid #c7d7fe',
-    borderRadius: 6,
-    fontSize: 12,
-    fontWeight: 600,
-    color: '#4f46e5',
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-  },
-  calIncomplete: {
-    fontSize: 12,
+  cardUpdated: {
+    margin: '8px 0 0',
+    fontSize: 11,
     color: '#9ca3af',
-    fontStyle: 'italic',
+  },
+  statusBadge: {
+    display: 'inline-block',
+    padding: '4px 12px',
+    borderRadius: 99,
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 700,
+  },
+  statusBadgeSm: {
+    display: 'inline-block',
+    padding: '2px 8px',
+    borderRadius: 99,
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 700,
   },
   // ── Supabase test badge (easy to remove) ──
   supabaseBadge: {
