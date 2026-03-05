@@ -1,12 +1,13 @@
-const API_BASE = 'https://n8n.eventstaffpro.tech/webhook/api'
-const CHECKIN_URL = `${API_BASE}/checkin`
-const STATUS_URL = `${API_BASE}/event-status`
+const SUPABASE_URL = 'https://xwclwrcggvmsngflbpcq.supabase.co'
+const API_BASE = `${SUPABASE_URL}/functions/v1`
+const CHECKIN_URL = `${API_BASE}/staff-checkin`
 const ADMIN_URL = `${API_BASE}/admin`
 
 export interface CheckinPayload {
   eventId: string
   shiftId: string
   staffId: string
+  staffToken: string
   status: 'DESPIERTO' | 'DE_CAMINO' | 'EN_SITIO'
 }
 
@@ -15,45 +16,35 @@ export interface CheckinResponse {
 }
 
 export interface StaffItem {
-  staffId: string
-  shiftId: string
+  eventid: string
+  shiftid: string
+  staffid: string
   status: string
   ts: string
+  staff?: {
+    staffid: string
+    name: string
+    phone: string
+  }
 }
 
 export interface EventStatusResponse {
-  total: number
-  counts: {
-    DESPIERTO?: number
-    DE_CAMINO?: number
-    EN_SITIO?: number
-    [key: string]: number | undefined
-  }
-  items: StaffItem[]
+  ok: boolean
+  rows: StaffItem[]
 }
 
-export async function postCheckin(
-  payload: CheckinPayload,
-  token: string
-): Promise<CheckinResponse> {
+export async function postCheckin(payload: CheckinPayload): Promise<CheckinResponse> {
   const res = await fetch(CHECKIN_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
     body: JSON.stringify(payload),
   })
 
-  const data = await res.json().catch(() => ({ error: 'Respuesta no es JSON' }))
+  let data: any
+  try { data = await res.json() } 
+  catch { data = { error: await res.text().catch(() => 'Respuesta no legible') } }
 
-  if (!res.ok) {
-    throw Object.assign(
-      new Error(`Error ${res.status}: ${res.statusText}`),
-      { data }
-    )
-  }
-
+  if (!res.ok) throw new Error(data?.error || `Error ${res.status}: ${res.statusText}`)
   return data as CheckinResponse
 }
 
@@ -120,12 +111,14 @@ export async function getEventLinks(
   token: string,
   eventId: string
 ): Promise<EventLinksResponse> {
-  const url = `${ADMIN_URL}?action=event-links&eventId=${encodeURIComponent(eventId)}`
-  const res = await fetch(url, {
-    method: 'GET',
+  const res = await fetch(ADMIN_URL, {
+    method: 'POST',
     headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
       Authorization: `Bearer ${token}`,
     },
+    body: JSON.stringify({ action: 'event-links', eventId }),
   })
 
   let data: unknown
@@ -143,26 +136,26 @@ export async function getEventLinks(
   return data as EventLinksResponse
 }
 
-export async function getEventStatus(
-  eventId: string,
-  token: string
-): Promise<EventStatusResponse> {
-  const url = `${STATUS_URL}?eventId=${encodeURIComponent(eventId)}`
-  const res = await fetch(url, {
-    method: 'GET',
+export async function getEventStatus(adminToken: string, eventId: string) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/event-status`, {
+    method: 'POST',
     headers: {
-      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
     },
+    body: JSON.stringify({ eventId, adminToken }),
   })
 
-  const data = await res.json().catch(() => ({ error: 'Respuesta no es JSON' }))
-
-  if (!res.ok) {
-    throw Object.assign(
-      new Error(`Error ${res.status}: ${res.statusText}`),
-      { data }
-    )
+  let data: any
+  try {
+    data = await res.json()
+  } catch {
+    data = { error: await res.text().catch(() => 'Respuesta no legible') }
   }
 
-  return data as EventStatusResponse
+  if (!res.ok) {
+    throw new Error(data?.error || `Error ${res.status}: ${res.statusText}`)
+  }
+
+  return data
 }

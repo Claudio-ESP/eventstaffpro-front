@@ -36,7 +36,7 @@ export default function Jefa() {
     setError(null)
     setData(null)
     try {
-      const res = await getEventStatus(eventId, token)
+      const res = await getEventStatus(token, eventId)
       setData(res)
     } catch (err: unknown) {
       const e = err as Error
@@ -130,7 +130,12 @@ export default function Jefa() {
     }
   }
 
-  const counts = data?.counts ?? {}
+  const rows = data?.rows ?? []
+  const counts: Record<string, number> = {
+    DESPIERTO: rows.filter(r => r.status === 'DESPIERTO').length,
+    DE_CAMINO: rows.filter(r => r.status === 'DE_CAMINO').length,
+    EN_SITIO: rows.filter(r => r.status === 'EN_SITIO').length,
+  }
   const countKeys = ['DESPIERTO', 'DE_CAMINO', 'EN_SITIO']
 
   return (
@@ -181,7 +186,7 @@ export default function Jefa() {
           <div style={styles.summaryRow}>
             <div style={styles.statCard}>
               <span style={styles.cardLabel}>Total</span>
-              <span style={styles.cardValue}>{data.total}</span>
+              <span style={styles.cardValue}>{rows.length}</span>
             </div>
             {countKeys.map(key => (
               <div key={key} style={{ ...styles.statCard, borderTop: `3px solid ${STATUS_COLORS[key] ?? '#6b7280'}` }}>
@@ -194,11 +199,13 @@ export default function Jefa() {
           </div>
 
           <h3 style={styles.tableTitle}>Detalle del personal</h3>
-          {data.items && data.items.length > 0 ? (
+          {rows.length > 0 ? (
             <div style={styles.tableWrapper}>
               <table style={styles.table}>
                 <thead>
                   <tr>
+                    <th style={styles.th}>Nombre</th>
+                    <th style={styles.th}>Teléfono</th>
                     <th style={styles.th}>Staff ID</th>
                     <th style={styles.th}>Turno</th>
                     <th style={styles.th}>Estado</th>
@@ -206,10 +213,12 @@ export default function Jefa() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.items.map((item, i) => (
+                  {rows.map((item, i) => (
                     <tr key={i} style={i % 2 === 0 ? styles.trEven : styles.trOdd}>
-                      <td style={styles.td}>{item.staffId}</td>
-                      <td style={styles.td}>{item.shiftId}</td>
+                      <td style={styles.td}>{item.staff?.name ?? '—'}</td>
+                      <td style={styles.td}>{item.staff?.phone ?? '—'}</td>
+                      <td style={styles.td}>{item.staffid}</td>
+                      <td style={styles.td}>{item.shiftid}</td>
                       <td style={styles.td}>
                         <span
                           style={{

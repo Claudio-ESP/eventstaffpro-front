@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { postCheckin, getStaffSchedule, CheckinPayload, ScheduleItem } from '../api'
+import { supabase } from '../supabase'
 
 type Status = CheckinPayload['status']
 
@@ -78,7 +79,7 @@ function downloadIcs(item: ScheduleItem, staffId: string): void {
 
 export default function Azafato() {
   const [eventId, setEventId] = useState('EVT001')
-  const [shiftId, setShiftId] = useState('T1')
+  const [shiftId, setShiftId] = useState('SHIFT1')
   const [staffId, setStaffId] = useState('STF01')
   const [token, setToken] = useState('')
 
@@ -89,11 +90,40 @@ export default function Azafato() {
   const [scheduleData, setScheduleData] = useState<ScheduleItem[] | null>(null)
   const [scheduleError, setScheduleError] = useState<string | null>(null)
 
+  // ── Supabase test (easy to remove) ──────────────────────────────────────
+const [supabaseStatus, setSupabaseStatus] = useState<'loading' | 'ok' | 'error'>('loading')
+
+useEffect(() => {
+  const testSupabase = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('agencies')
+        .select('*')
+        .limit(1)
+
+      if (error) {
+        console.error('Supabase test error', error)
+        setSupabaseStatus('error')
+      } else {
+        console.log('Supabase test OK', data)
+        setSupabaseStatus('ok')
+      }
+    } catch (err) {
+      console.error('Supabase unexpected error', err)
+      setSupabaseStatus('error')
+    }
+  }
+
+  testSupabase()
+}, [])
+  // ────────────────────────────────────────────────────────────────────────
+
   const urlParams = new URLSearchParams(window.location.search)
   const eventFromUrl = urlParams.has('eventId')
   const shiftFromUrl = urlParams.has('shiftId')
   const staffFromUrl = urlParams.has('staffId')
-  const tokenFromUrl = urlParams.has('token')
+  const tokenFromUrl = urlParams.has('staffToken') || urlParams.has('token')
+    || urlParams.has('stafftoken') || urlParams.has('staff_token')
 
   // Auto-fill inputs from URL query params
   useEffect(() => {
@@ -101,7 +131,15 @@ export default function Azafato() {
     const eid = params.get('eventId')
     const sid = params.get('shiftId')
     const stid = params.get('staffId')
-    const t = params.get('token')
+    const t = params.get('staffToken')
+      ?? params.get('token')
+      ?? params.get('stafftoken')
+      ?? params.get('staff_token')
+      ?? ''
+    if (import.meta.env.DEV) {
+      console.log('URL params', Object.fromEntries(params.entries()))
+      console.log('tokenFromUrl', t)
+    }
     if (eid) setEventId(eid)
     if (sid) setShiftId(sid)
     if (stid) setStaffId(stid)
@@ -116,7 +154,9 @@ export default function Azafato() {
     setCheckinLoading(true)
     setCheckinResult(null)
     try {
-      const data = await postCheckin({ eventId, shiftId, staffId, status }, token)
+      const payload: CheckinPayload = { eventId, shiftId, staffId, staffToken: token, status }
+      console.log('CHECKIN payload', payload)
+      const data = await postCheckin(payload)
       setCheckinResult({ ok: true, data })
     } catch (err: unknown) {
       const error = err as Error & { data?: unknown }
@@ -147,6 +187,13 @@ export default function Azafato() {
   return (
     <div style={styles.page}>
       <h2 style={styles.pageTitle}>Azafato</h2>
+
+      {/* ── Supabase test badge (easy to remove) ── */}
+      <p style={styles.supabaseBadge}>
+        {supabaseStatus === 'loading' && '⏳ Probando Supabase...'}
+        {supabaseStatus === 'ok'      && '✅ Supabase OK'}
+        {supabaseStatus === 'error'   && '❌ Supabase ERROR (mira consola)'}
+      </p>
 
       {/* ── Check-in section ── */}
       <section style={styles.card}>
@@ -180,18 +227,17 @@ export default function Azafato() {
               disabled={staffFromUrl}
             />
           </div>
-          {!tokenFromUrl && (
-            <div style={styles.fieldGroup}>
-              <label style={styles.label}>Token (Bearer)</label>
-              <input
-                style={styles.input}
-                type="password"
-                value={token}
-                onChange={e => setToken(e.target.value)}
-                placeholder="Pega tu token aquí"
-              />
-            </div>
-          )}
+          <div style={styles.fieldGroup}>
+            <label style={styles.label}>Token (Bearer)</label>
+            <input
+              style={tokenFromUrl ? styles.inputLocked : styles.input}
+              type="password"
+              value={token}
+              onChange={e => setToken(e.target.value)}
+              disabled={tokenFromUrl}
+              placeholder="Pega tu token aquí"
+            />
+          </div>
         </div>
 
         <div style={styles.buttonRow}>
@@ -488,5 +534,11 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     color: '#9ca3af',
     fontStyle: 'italic',
+  },
+  // ── Supabase test badge (easy to remove) ──
+  supabaseBadge: {
+    margin: 0,
+    fontSize: 13,
+    color: '#6b7280',
   },
 }
