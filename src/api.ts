@@ -33,6 +33,38 @@ export interface EventStatusResponse {
   rows: StaffItem[]
 }
 
+// ── Incident ──────────────────────────────────────────────────────────────────
+export interface IncidentPayload {
+  eventId: string
+  shiftId: string
+  staffId: string
+  type: 'INCIDENCIA' | 'DEMORA'
+  message: string
+}
+
+export async function postIncident(
+  staffToken: string,
+  payload: IncidentPayload
+): Promise<{ ok: boolean }> {
+  const res = await fetch(`${API_BASE}/staff-incident`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      Authorization: `Bearer ${staffToken}`,
+    },
+    body: JSON.stringify(payload),
+  })
+  let data: unknown
+  try { data = await res.json() }
+  catch { data = { error: await res.text().catch(() => 'Respuesta no legible') } }
+  if (!res.ok) {
+    const msg = (data as Record<string, unknown>)?.error ?? `Error ${res.status}: ${res.statusText}`
+    throw new Error(String(msg))
+  }
+  return data as { ok: boolean }
+}
+
 export async function postCheckin(payload: CheckinPayload): Promise<CheckinResponse> {
   const res = await fetch(CHECKIN_URL, {
     method: 'POST',
