@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { supabase } from '../supabase'
 import {
   getEventStatus, getEventLinks, getEventInfo,
   adminUpsertEvent, adminUpsertShift, adminAssignStaff,
@@ -31,6 +32,53 @@ function generateEventId(name: string): string {
 interface IndividualSched { date: string; startTime: string; endTime: string }
 interface ChartSlice { color: string; value: number; label: string }
 type ManageTab = 'all' | 'individual' | 'remove' | 'add'
+
+// ── NEW: Incidents ────────────────────────────────────────────────────────────
+interface IncidentRow {
+  incidentid: string
+  eventid: string
+  shiftid: string
+  staffid: string
+  type: string
+  message: string
+  created_at: string
+}
+interface IncidentCounts {
+  total: number
+  demora: number
+  incidencia: number
+  rows: IncidentRow[]  // full rows available for the modal
+}
+
+/** Queries the `incidents` table via Supabase for a given event, ordered newest first. */
+async function fetchIncidents(evtId: string): Promise<IncidentCounts> {
+  // DEBUG — remove once confirmed working
+  console.log('[fetchIncidents] querying eventid:', evtId)
+
+  const { data, error } = await supabase
+    .from('incidents')
+    .select('*')
+    .eq('eventid', evtId)
+    .order('created_at', { ascending: false })
+
+  // DEBUG — remove once confirmed working
+  console.log('[fetchIncidents] result — rows:', data?.length ?? 0, '| error:', error)
+
+  if (error) {
+    console.error('[fetchIncidents] Supabase error:', error.message, error.details)
+    return { total: 0, demora: 0, incidencia: 0, rows: [] }
+  }
+  if (!data) return { total: 0, demora: 0, incidencia: 0, rows: [] }
+
+  const rows = data as IncidentRow[]
+  return {
+    total: rows.length,
+    demora: rows.filter(r => r.type === 'DEMORA').length,
+    incidencia: rows.filter(r => r.type === 'INCIDENCIA').length,
+    rows,
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ── Time helpers ─────────────────────────────────────────────────────────────
 function isoToDateInput(iso: string | null | undefined): string {
@@ -501,6 +549,94 @@ function EventWizard({ token, onComplete, onCancel }: {
           )}
         </div>
       </Card>
+    </div>
+  )
+}
+
+// ── IncidentsModal ────────────────────────────────────────────────────────────
+function IncidentsModal({ incidents, onClose }: { incidents: IncidentCounts; onClose: () => void }) {
+  function fmtMadridTime(iso: string): string {
+    try {
+      return new Intl.DateTimeFormat('es-ES', {
+        timeZone: 'Europe/Madrid', day: '2-digit', month: '2-digit',
+        hour: '2-digit', minute: '2-digit',
+      }).format(new Date(iso))
+    } catch { return iso.slice(0, 16).replace('T', ' ') }
+  }
+
+  const I: Record<string, React.CSSProperties> = {
+    overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' },
+    panel: { background: '#0d1525', border: '1px solid #1e293b', borderRadius: 14, width: '100%', maxWidth: 680, boxShadow: '0 25px 60px rgba(0,0,0,0.6)' },
+    header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px', borderBottom: '1px solid #1e293b' },
+    title: { color: '#f1f5f9', fontWeight: 800, fontSize: 18 },
+    close: { background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 22, lineHeight: 1, padding: 4 },
+    body: { padding: '8px 0 16px' },
+    tableWrapper: { overflowX: 'auto' },
+    table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 },
+    th: { padding: '10px 16px', textAlign: 'left' as const, fontSize: 10, fontWeight: 700, color: '#334155', textTransform: 'uppercase' as const, letterSpacing: '0.07em', borderBottom: '1px solid #1e293b' },
+    trEven: { background: 'transparent' },
+    trOdd: { background: 'rgba(255,255,255,0.015)' },
+    td: { padding: '11px 16px', color: '#94a3b8', verticalAlign: 'top' as const },
+    emptyState: { color: '#334155', textAlign: 'center' as const, padding: '40px 0', fontSize: 14 },
+  }
+
+  return (
+    <div style={I.overlay} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={I.panel}>
+        <div style={I.header}>
+          <div>
+            <span style={I.title}>🚨 Incidencias del evento</span>
+            <span style={{ marginLeft: 12, fontSize: 12, color: '#475569' }}>
+              {incidents.total} {incidents.total === 1 ? 'reporte' : 'reportes'} ·{' '}
+              <span style={{ color: '#f59e0b' }}>{incidents.demora} demora{incidents.demora !== 1 ? 's' : ''}</span>{' · '}
+              <span style={{ color: '#f87171' }}>{incidents.incidencia} incidencia{incidents.incidencia !== 1 ? 's' : ''}</span>
+            </span>
+          </div>
+          <button style={I.close} onClick={onClose}>×</button>
+        </div>
+
+        <div style={I.body}>
+          {incidents.rows.length === 0 ? (
+            <div style={I.emptyState}>Sin incidencias registradas para este evento.</div>
+          ) : (
+            <div style={I.tableWrapper}>
+              <table style={I.table}>
+                <thead>
+                  <tr>
+                    <th style={I.th}>Hora</th>
+                    <th style={I.th}>Staff ID</th>
+                    <th style={I.th}>Tipo</th>
+                    <th style={I.th}>Mensaje</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {incidents.rows.map((row, i) => (
+                    <tr key={row.incidentid} style={i % 2 === 0 ? I.trEven : I.trOdd}>
+                      <td style={{ ...I.td, fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap', color: '#475569' }}>
+                        {fmtMadridTime(row.created_at)}
+                      </td>
+                      <td style={{ ...I.td, fontFamily: 'monospace', fontSize: 12, color: '#64748b' }}>
+                        {row.staffid}
+                      </td>
+                      <td style={{ ...I.td, whiteSpace: 'nowrap' }}>
+                        <span style={{
+                          display: 'inline-block', padding: '3px 9px', borderRadius: 99,
+                          fontSize: 11, fontWeight: 700,
+                          background: row.type === 'DEMORA' ? 'rgba(245,158,11,0.12)' : 'rgba(239,68,68,0.12)',
+                          color: row.type === 'DEMORA' ? '#fbbf24' : '#f87171',
+                        }}>
+                          {row.type}
+                        </span>
+                      </td>
+                      <td style={{ ...I.td, color: '#e2e8f0' }}>{row.message}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -1160,10 +1296,15 @@ export default function Iria() {
   // Assignments (source of truth for total staff count)
   const [assignments, setAssignments] = useState<Assignment[]>([])
 
+  // ── NEW: Incidents ────────────────────────────────────────────────────────
+  const [incidents, setIncidents] = useState<IncidentCounts | null>(null)
+  // ─────────────────────────────────────────────────────────────────────────
+
   // UI sections
   const [showWizard, setShowWizard] = useState(false)
   const [showStaffDb, setShowStaffDb] = useState(false)
   const [showManagePanel, setShowManagePanel] = useState(false)
+  const [showIncidentsModal, setShowIncidentsModal] = useState(false) // NEW
 
   // ── Effects (identical logic to Jefa.tsx) ────────────────────────────────
   useEffect(() => {
@@ -1239,6 +1380,7 @@ export default function Iria() {
     setError(null)
     setLinksError(null)
     setAssignments([])
+    setIncidents(null) // NEW: clear incidents when switching event
   }, [eventId])
 
   // ── Handlers ─────────────────────────────────────────────────────────────
@@ -1248,13 +1390,15 @@ export default function Iria() {
     setLoading(true); setError(null)
     if (clearData) setData(null)
     try {
-      const [statusRes, assignRes] = await Promise.allSettled([
+      const [statusRes, assignRes, incidentRes] = await Promise.allSettled([
         getEventStatus(token, eventId),
         adminListEventAssignments(token, eventId),
+        fetchIncidents(eventId), // NEW: load incident counts in parallel
       ])
       if (statusRes.status === 'fulfilled') { setData(statusRes.value); setLastRefreshed(new Date()) }
       else throw statusRes.reason
       if (assignRes.status === 'fulfilled') setAssignments(assignRes.value)
+      if (incidentRes.status === 'fulfilled') setIncidents(incidentRes.value) // NEW
     } catch (err: unknown) { setError((err as Error).message) }
     finally { loadingRef.current = false; setLoading(false) }
   }
@@ -1475,6 +1619,39 @@ export default function Iria() {
                   <span style={{ ...S.statValue, color }}>{counts[key as keyof typeof counts]}</span>
                 </div>
               ))}
+
+              {/* ── NEW: Incident card ──────────────────────────────────── */}
+              {/* ── NEW: Incident card ──────────────────────────────────── */}
+              {incidents && (
+                <div style={{ ...S.statCard, borderTop: '3px solid #ef4444', alignItems: 'flex-start', minWidth: 130 }}>
+                  <span style={S.statLabel}>Incidencias</span>
+                  <span style={{ ...S.statValue, color: '#f87171' }}>{incidents.total}</span>
+                  <span style={{ fontSize: 10, color: '#334155', marginTop: 1 }}>
+                    {incidents.total === 1 ? 'reporte' : 'reportes'}
+                  </span>
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+                      <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>Demoras</span>
+                      <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 800 }}>{incidents.demora}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+                      <span style={{ fontSize: 11, color: '#f87171', fontWeight: 600 }}>Incidencias</span>
+                      <span style={{ fontSize: 11, color: '#f87171', fontWeight: 800 }}>{incidents.incidencia}</span>
+                    </div>
+                  </div>
+                  {incidents.total > 0 && (
+                    <button
+                      style={{ marginTop: 10, width: '100%', padding: '5px 0', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, color: '#f87171', fontSize: 11, fontWeight: 700, cursor: 'pointer', letterSpacing: '0.04em' }}
+                      onClick={() => setShowIncidentsModal(true)}
+                    >
+                      Ver →
+                    </button>
+                  )}
+                </div>
+              )}
+              {/* ─────────────────────────────────────────────────────────── */}
+              {/* ─────────────────────────────────────────────────────────── */}
+
             </div>
           </Card>
         </div>
@@ -1651,6 +1828,14 @@ export default function Iria() {
         eventId={eventId}
         onClose={() => setShowManagePanel(false)}
         onRefresh={handleRefresh}
+      />
+    )}
+
+    {/* NEW: incidents detail modal */}
+    {showIncidentsModal && incidents && (
+      <IncidentsModal
+        incidents={incidents}
+        onClose={() => setShowIncidentsModal(false)}
       />
     )}
     </>
