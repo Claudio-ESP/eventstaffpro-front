@@ -255,6 +255,55 @@ export async function adminListShifts(token: string, eventId: string): Promise<A
   return ((res.shifts ?? res.rows ?? res.data ?? []) as AdminShift[])
 }
 
+export interface EventItem {
+  eventid: string
+  name: string | null
+  location: string | null
+}
+
+// TODO backend: action="list-events" → { events: EventItem[] }
+export async function adminListEvents(token: string): Promise<EventItem[]> {
+  const res = await adminPost(token, { action: 'list-events' })
+  return ((res.events ?? res.rows ?? res.data ?? []) as EventItem[])
+}
+
+export interface Assignment {
+  assignmentid: string
+  eventid: string
+  shiftid: string
+  staffid: string
+  starts_at_override: string | null
+  ends_at_override: string | null
+  effective_starts_at: string | null
+  effective_ends_at: string | null
+  staff: { staffid: string; name: string; phone: string } | null
+  shift: { shiftid: string; name: string | null; starts_at: string | null; ends_at: string | null } | null
+}
+
+export async function adminListEventAssignments(token: string, eventId: string): Promise<Assignment[]> {
+  const res = await adminPost(token, { action: 'list-event-assignments', eventId })
+  return ((res.assignments ?? res.rows ?? res.data ?? []) as Assignment[])
+}
+
+export async function adminUpdateShiftTime(
+  token: string,
+  payload: { eventId: string; shiftId: string; startsAt?: string; endsAt?: string }
+): Promise<AdminResponse> {
+  return adminPost(token, { action: 'update-shift-time', ...payload })
+}
+
+export async function adminUpdateAssignmentTime(
+  token: string,
+  payload: { assignmentId: string; startsAt?: string; endsAt?: string; clearOverride?: boolean }
+): Promise<AdminResponse> {
+  return adminPost(token, { action: 'update-assignment-time', ...payload })
+}
+
+// TODO backend: implement action="remove-assignment"
+export async function adminRemoveAssignment(token: string, assignmentId: string): Promise<AdminResponse> {
+  return adminPost(token, { action: 'remove-assignment', assignmentId })
+}
+
 export async function getEventStatus(adminToken: string, eventId: string) {
   const res = await fetch(`${SUPABASE_URL}/functions/v1/event-status`, {
     method: 'POST',

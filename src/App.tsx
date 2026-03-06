@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
 import Azafato from './pages/Azafato'
-import Jefa from './pages/Jefa'
+import Iria from './pages/Iria'
 
-type Tab = 'azafato' | 'jefa'
+type Tab = 'staff' | 'iria'
 
 function getQueryParam(params: URLSearchParams, keys: string[]) {
   for (const k of keys) {
@@ -13,25 +13,22 @@ function getQueryParam(params: URLSearchParams, keys: string[]) {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('azafato')
+  const [activeTab, setActiveTab] = useState<Tab>('iria')
 
   const { isStaffMode } = useMemo(() => {
     const p = new URLSearchParams(window.location.search)
-
-    // Acepta variantes por si algún link se genera con distinta capitalización
     const staffId = getQueryParam(p, ['staffId', 'staffid', 'staffID', 'staff'])
     const token = getQueryParam(p, ['token', 't', 'staffToken'])
-
     return { isStaffMode: Boolean(staffId && token) }
   }, [])
 
   if (isStaffMode) {
     return (
-      <div style={styles.root}>
-        <header style={styles.header}>
-          <span style={styles.logo}>EventStaffPro</span>
+      <div style={S.root}>
+        <header style={S.header}>
+          <span style={S.logo}>EventStaffPro</span>
         </header>
-        <main style={styles.main}>
+        <main style={S.main}>
           <Azafato />
         </main>
       </div>
@@ -39,82 +36,86 @@ export default function App() {
   }
 
   return (
-    <div style={styles.root}>
-      <header style={styles.header}>
-        <span style={styles.logo}>EventStaffPro</span>
+    <div style={S.root}>
+      <header style={S.header}>
+        <span style={S.logo}>EventStaffPro</span>
+        <span style={S.logoSub}>· Gestión de personal</span>
       </header>
 
-      <nav style={styles.nav}>
+      <nav style={S.nav}>
         <button
-          style={{
-            ...styles.tab,
-            ...(activeTab === 'azafato' ? styles.tabActive : styles.tabInactive),
-          }}
-          onClick={() => setActiveTab('azafato')}
+          style={{ ...S.tab, ...(activeTab === 'iria' ? S.tabActive : S.tabInactive) }}
+          onClick={() => setActiveTab('iria')}
         >
-          Azafato
+          IRIA
         </button>
         <button
-          style={{
-            ...styles.tab,
-            ...(activeTab === 'jefa' ? styles.tabActive : styles.tabInactive),
-          }}
-          onClick={() => setActiveTab('jefa')}
+          style={{ ...S.tab, ...(activeTab === 'staff' ? S.tabActive : S.tabInactive) }}
+          onClick={() => setActiveTab('staff')}
         >
-          Jefa
+          STAFF
         </button>
       </nav>
 
-      <main style={styles.main}>
-        {activeTab === 'azafato' ? <Azafato /> : <Jefa />}
+      <main style={S.main}>
+        {activeTab === 'iria' ? <Iria /> : <Azafato />}
       </main>
     </div>
   )
 }
 
-const styles: Record<string, React.CSSProperties> = {
+const S: Record<string, React.CSSProperties> = {
   root: {
-    fontFamily: "'Segoe UI', system-ui, sans-serif",
+    fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
     minHeight: '100vh',
-    background: '#f3f4f6',
+    background: '#0b1020',
   },
   header: {
-    background: '#1e1b4b',
-    color: '#fff',
-    padding: '14px 24px',
+    background: '#060c18',
+    borderBottom: '1px solid #0f1e30',
+    color: '#e2e8f0',
+    padding: '14px 28px',
     display: 'flex',
     alignItems: 'center',
+    gap: 8,
   },
   logo: {
-    fontSize: 18,
-    fontWeight: 700,
-    letterSpacing: '-0.01em',
+    fontSize: 17,
+    fontWeight: 800,
+    letterSpacing: '-0.02em',
+    color: '#f1f5f9',
+  },
+  logoSub: {
+    fontSize: 13,
+    color: '#334155',
+    fontWeight: 400,
   },
   nav: {
     display: 'flex',
-    borderBottom: '2px solid #e5e7eb',
-    background: '#fff',
-    padding: '0 24px',
+    background: '#060c18',
+    borderBottom: '1px solid #0f1e30',
+    padding: '0 28px',
   },
   tab: {
     padding: '12px 24px',
     border: 'none',
     background: 'transparent',
-    fontSize: 15,
-    fontWeight: 600,
+    fontSize: 13,
+    fontWeight: 700,
     cursor: 'pointer',
-    borderBottom: '3px solid transparent',
-    marginBottom: -2,
+    borderBottom: '2px solid transparent',
+    marginBottom: -1,
+    letterSpacing: '0.08em',
     transition: 'color 0.15s, border-color 0.15s',
   },
   tabActive: {
-    color: '#4f46e5',
-    borderBottomColor: '#4f46e5',
+    color: '#6366f1',
+    borderBottomColor: '#6366f1',
   },
   tabInactive: {
-    color: '#6b7280',
+    color: '#334155',
   },
   main: {
-    padding: '24px 16px',
+    padding: 0,
   },
 }
