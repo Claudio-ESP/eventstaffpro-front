@@ -5,7 +5,8 @@ import {
   adminUpsertEvent, adminUpsertShift, adminAssignStaff,
   adminUpsertStaff, adminListStaff, adminListEvents,
   adminListEventAssignments, adminUpdateShiftTime, adminUpdateAssignmentTime, adminRemoveAssignment,
-  EventInfo, AdminStaff, EventItem, EventStatusResponse, EventLinksResponse, Assignment, StaffItem,
+  adminListIncidents,
+  EventInfo, AdminStaff, EventItem, EventStatusResponse, EventLinksResponse, Assignment, StaffItem, IncidentRow,
 } from '../api'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -33,65 +34,164 @@ interface IndividualSched { date: string; startTime: string; endTime: string }
 interface ChartSlice { color: string; value: number; label: string }
 type ManageTab = 'all' | 'individual' | 'remove' | 'add'
 
-// ── NEW: Incidents ────────────────────────────────────────────────────────────
-interface IncidentRow {
-  incidentid: string
-  eventid: string
-  shiftid: string
-  staffid: string
-  type: string
-  message: string
-  created_at: string
-}
+// ── Incidents ────────────────────────────────────────────────────────────────
+// IncidentRow is imported from api.ts
 interface IncidentCounts {
   total: number
   demora: number
   incidencia: number
-  rows: IncidentRow[]  // full rows available for the modal
+  rows: IncidentRow[]
 }
 
-/** Queries the `incidents` table via Supabase for a given event, ordered newest first. */
-async function fetchIncidents(evtId: string): Promise<IncidentCounts> {
-  // DEBUG — remove once confirmed working
-  console.log('[fetchIncidents] querying eventid:', evtId)
+/**
+ * Loads incidents for a given event.
+ *
+ * PRIMARY path  → adminListIncidents (admin Edge Function, service_role, bypasses RLS).
+ * FALLBACK path → direct Supabase query (requires SELECT policy on incidents for anon role).
+ *
+ * Root cause of "always 0": Supabase RLS silently returns [] for anon when no policy exists.
+ * If the fallback also returns 0, add this policy in the Supabase SQL editor:
+ *   CREATE POLICY "anon_read_incidents" ON incidents FOR SELECT TO anon USING (true);
+ */
+async function fetchIncidents(token: string, evtId: string): Promise<IncidentCounts> {
+  console.log('[incidents] selectedEventId real:', evtId)
 
-  const { data, error } = await supabase
-    .from('incidents')
-    .select('*')
-    .eq('eventid', evtId)
-    .order('created_at', { ascending: false })
+  let rows: IncidentRow[] = []
+  let adminOk = false
 
-  // DEBUG — remove once confirmed working
-  console.log('[fetchIncidents] result — rows:', data?.length ?? 0, '| error:', error)
-
-  if (error) {
-    console.error('[fetchIncidents] Supabase error:', error.message, error.details)
-    return { total: 0, demora: 0, incidencia: 0, rows: [] }
+  // ── PRIMARY: admin backend (service_role → bypasses RLS) ──────────────────
+  // NOTE: if backend returns HTTP 200 but action is not implemented it will
+  // return an empty array WITHOUT throwing — so we check rows.length too.
+  try {
+    rows = await adminListIncidents(token, evtId)
+    console.log('[incidents] admin backend raw rows:', JSON.stringify(rows))
+    if (rows.length > 0) {
+      adminOk = true
+    } else {
+      console.warn(
+        '[incidents] admin backend returned 0 rows.',
+        '\n→ If "list-incidents" is not yet implemented in the admin Edge Function,',
+        '\n  add it (see backend instructions in fetchIncidents comment).',
+        '\n→ Falling back to Supabase direct query.'
+      )
+    }
+  } catch (adminErr) {
+    console.warn('[incidents] admin backend threw — falling back to Supabase direct:', adminErr)
   }
-  if (!data) return { total: 0, demora: 0, incidencia: 0, rows: [] }
 
-  const rows = data as IncidentRow[]
-  return {
-    total: rows.length,
-    demora: rows.filter(r => r.type === 'DEMORA').length,
-    incidencia: rows.filter(r => r.type === 'INCIDENCIA').length,
-    rows,
+  // ── FALLBACK: direct Supabase anon query ──────────────────────────────────
+  // Triggered if admin returned 0 rows OR threw an error.
+  // Requires a SELECT policy on the incidents table for anon role:
+  //   CREATE POLICY "anon_read_incidents" ON incidents FOR SELECT TO anon USING (true);
+  if (!adminOk) {
+    const { data, error } = await supabase
+      .from('incidents')
+      .select('*')
+      .eq('eventid', evtId)
+      .order('created_at', { ascending: false })
+
+    console.log('[incidents] Supabase fallback — error:', error?.message ?? null)
+    console.log('[incidents] incidents raw rows:', JSON.stringify(data))
+
+    if (error) {
+      console.error('[incidents] Supabase error:', error.message)
+    } else if (!data || data.length === 0) {
+      console.warn(
+        '[incidents] Supabase returned 0 rows for eventid:', evtId,
+        '\n→ If there are rows in DB, RLS is blocking the anon key.',
+        '\n→ Fix (Supabase SQL editor):',
+        "\n    CREATE POLICY \"anon_read_incidents\" ON incidents FOR SELECT TO anon USING (true);",
+        '\n→ Or implement action="list-incidents" in the admin Edge Function (service_role bypasses RLS).'
+      )
+    }
+
+    rows = (data ?? []) as IncidentRow[]
   }
+
+  const total = rows.length
+  const demora = rows.filter(r => r.type === 'DEMORA').length
+  const incidencia = rows.filter(r => r.type === 'INCIDENCIA').length
+
+  console.log('[incidents] incidents total:', total)
+  console.log('[incidents] demoraCount:', demora)
+  console.log('[incidents] incidenciaCount:', incidencia)
+
+  return { total, demora, incidencia, rows }
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Time helpers ─────────────────────────────────────────────────────────────
+// ── Time helpers (Europe/Madrid ↔ UTC) ───────────────────────────────────────
+//
+// Spain uses CET (UTC+1, winter) and CEST (UTC+2, summer).
+// All times the user types are interpreted as Europe/Madrid local time.
+// All times stored in Supabase are UTC (timestamptz).
+//
+// SAVE direction  → madridToUtcIso()   converts user input to UTC before sending
+// DISPLAY direction → isoToDateInput() / isoToTimeInput() show Madrid local time
+
+/**
+ * Converts a date + time entered by the user (Europe/Madrid) to a UTC ISO string.
+ * Works regardless of the browser's own timezone. Handles DST automatically.
+ *
+ * Example (winter, UTC+1): madridToUtcIso("2026-03-08", "01:40") → "2026-03-08T00:40:00.000Z"
+ * Example (summer, UTC+2): madridToUtcIso("2026-07-01", "01:40") → "2026-06-30T23:40:00.000Z"
+ */
+function madridToUtcIso(date: string, time: string): string | undefined {
+  if (!date || !time) return undefined
+  const [year, month, day] = date.split('-').map(Number)
+  const [hours, minutes]   = time.split(':').map(Number)
+
+  // 1. Treat the user's numbers as UTC (a "fake" UTC timestamp)
+  const fakeUtcMs = Date.UTC(year, month - 1, day, hours, minutes, 0)
+
+  // 2. Ask Intl what Madrid's clock would show at that fake UTC instant
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Madrid',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(fakeUtcMs))
+  const get = (t: string) => Number(parts.find(p => p.type === t)?.value ?? '0')
+
+  // 3. Offset = how many minutes ahead Madrid is relative to our fake UTC
+  const madridMinutes = (get('hour') % 24) * 60 + get('minute')
+  const inputMinutes  = hours * 60 + minutes
+  let offsetMinutes   = madridMinutes - inputMinutes
+  // Normalize across midnight (Spain is at most UTC+2, never more than a few hours off)
+  if (offsetMinutes < -12 * 60) offsetMinutes += 24 * 60
+  if (offsetMinutes >  12 * 60) offsetMinutes -= 24 * 60
+
+  // 4. Actual UTC = fake UTC minus the Madrid offset
+  return new Date(fakeUtcMs - offsetMinutes * 60_000).toISOString()
+}
+
+/** Extracts the "YYYY-MM-DD" portion of a UTC ISO string, displayed in Madrid timezone. */
 function isoToDateInput(iso: string | null | undefined): string {
   if (!iso) return ''
-  return iso.slice(0, 10)
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Madrid',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(d)
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? ''
+  return `${get('year')}-${get('month')}-${get('day')}`
 }
+
+/** Extracts the "HH:MM" portion of a UTC ISO string, displayed in Madrid timezone. */
 function isoToTimeInput(iso: string | null | undefined): string {
   if (!iso) return ''
-  return iso.slice(11, 16)
-}
-function dateTimeToIso(date: string, time: string): string | undefined {
-  if (!date || !time) return undefined
-  return `${date}T${time}:00`
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Madrid',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d)
+  const h = parts.find(p => p.type === 'hour')?.value ?? '00'
+  const m = parts.find(p => p.type === 'minute')?.value ?? '00'
+  // Intl can return "24" for midnight — normalize to "00"
+  return `${h === '24' ? '00' : h}:${m}`
 }
 
 // ── Styles ───────────────────────────────────────────────────────────────────
@@ -300,8 +400,8 @@ function EventWizard({ token, onComplete, onCancel }: {
 
       if (scheduleMode === 'same') {
         const shiftId = `${eventId}S1`
-        const startsAt = sharedDate && sharedStart ? new Date(`${sharedDate}T${sharedStart}`).toISOString() : undefined
-        const endsAt   = sharedDate && sharedEnd   ? new Date(`${sharedDate}T${sharedEnd}`).toISOString()   : undefined
+        const startsAt = madridToUtcIso(sharedDate, sharedStart)
+        const endsAt   = madridToUtcIso(sharedDate, sharedEnd)
         await adminUpsertShift(token, { eventId, shiftId, shiftName: 'Turno', ...(startsAt ? { startsAt } : {}), ...(endsAt ? { endsAt } : {}) })
         for (const staff of selectedStaff) {
           await adminAssignStaff(token, { eventId, shiftId, staffId: staff.staffid })
@@ -310,8 +410,8 @@ function EventWizard({ token, onComplete, onCancel }: {
         for (const staff of selectedStaff) {
           const sched = indivSchedules[staff.staffid]
           const shiftId = `${eventId}${staff.staffid.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 6)}`
-          const startsAt = sched?.date && sched?.startTime ? new Date(`${sched.date}T${sched.startTime}`).toISOString() : undefined
-          const endsAt   = sched?.date && sched?.endTime   ? new Date(`${sched.date}T${sched.endTime}`).toISOString()   : undefined
+          const startsAt = madridToUtcIso(sched?.date ?? '', sched?.startTime ?? '')
+          const endsAt   = madridToUtcIso(sched?.date ?? '', sched?.endTime   ?? '')
           await adminUpsertShift(token, { eventId, shiftId, shiftName: staff.name, ...(startsAt ? { startsAt } : {}), ...(endsAt ? { endsAt } : {}) })
           await adminAssignStaff(token, { eventId, shiftId, staffId: staff.staffid })
         }
@@ -758,8 +858,8 @@ function ManagePersonalModal({
     try {
       await adminUpdateShiftTime(token, {
         eventId, shiftId,
-        startsAt: dateTimeToIso(edit.date, edit.start),
-        endsAt: dateTimeToIso(edit.date, edit.end),
+        startsAt: madridToUtcIso(edit.date, edit.start),
+        endsAt: madridToUtcIso(edit.date, edit.end),
       })
       setShiftDone(s => ({ ...s, [shiftId]: true }))
       setTimeout(() => setShiftDone(s => ({ ...s, [shiftId]: false })), 2000)
@@ -778,8 +878,8 @@ function ManagePersonalModal({
     try {
       await adminUpdateAssignmentTime(token, {
         assignmentId,
-        startsAt: dateTimeToIso(edit.date, edit.start),
-        endsAt: dateTimeToIso(edit.date, edit.end),
+        startsAt: madridToUtcIso(edit.date, edit.start),
+        endsAt: madridToUtcIso(edit.date, edit.end),
       })
       setIndivDone(s => ({ ...s, [assignmentId]: true }))
       setTimeout(() => setIndivDone(s => ({ ...s, [assignmentId]: false })), 2000)
@@ -1380,8 +1480,21 @@ export default function Iria() {
     setError(null)
     setLinksError(null)
     setAssignments([])
-    setIncidents(null) // NEW: clear incidents when switching event
+    setIncidents(null) // clear incidents when switching event
   }, [eventId])
+
+  // Auto-load incidents when event + token are ready
+  useEffect(() => {
+    if (!eventId || !token) return
+    let cancelled = false
+    const tid = setTimeout(async () => {
+      try {
+        const result = await fetchIncidents(token, eventId)
+        if (!cancelled) setIncidents(result)
+      } catch { /* ignore */ }
+    }, 300)
+    return () => { cancelled = true; clearTimeout(tid) }
+  }, [eventId, token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Handlers ─────────────────────────────────────────────────────────────
   async function refreshStatus(clearData = false) {
@@ -1393,7 +1506,7 @@ export default function Iria() {
       const [statusRes, assignRes, incidentRes] = await Promise.allSettled([
         getEventStatus(token, eventId),
         adminListEventAssignments(token, eventId),
-        fetchIncidents(eventId), // NEW: load incident counts in parallel
+        fetchIncidents(token, eventId), // load incident counts in parallel
       ])
       if (statusRes.status === 'fulfilled') { setData(statusRes.value); setLastRefreshed(new Date()) }
       else throw statusRes.reason
@@ -1620,36 +1733,36 @@ export default function Iria() {
                 </div>
               ))}
 
-              {/* ── NEW: Incident card ──────────────────────────────────── */}
-              {/* ── NEW: Incident card ──────────────────────────────────── */}
-              {incidents && (
-                <div style={{ ...S.statCard, borderTop: '3px solid #ef4444', alignItems: 'flex-start', minWidth: 130 }}>
-                  <span style={S.statLabel}>Incidencias</span>
-                  <span style={{ ...S.statValue, color: '#f87171' }}>{incidents.total}</span>
-                  <span style={{ fontSize: 10, color: '#334155', marginTop: 1 }}>
-                    {incidents.total === 1 ? 'reporte' : 'reportes'}
-                  </span>
-                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
-                      <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>Demoras</span>
-                      <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 800 }}>{incidents.demora}</span>
+              {/* ── Incidents card ───────────────────────────────────────── */}
+              <div style={{ ...S.statCard, borderTop: '3px solid #ef4444', alignItems: 'flex-start', minWidth: 130 }}>
+                <span style={S.statLabel}>Incidencias</span>
+                {incidents == null ? (
+                  <span style={{ ...S.statValue, color: '#334155' }}>—</span>
+                ) : (
+                  <>
+                    <span style={{ ...S.statValue, color: '#f87171' }}>{incidents.total}</span>
+                    <span style={{ fontSize: 10, color: '#334155', marginTop: 1 }}>
+                      {incidents.total === 1 ? 'reporte' : 'reportes'}
+                    </span>
+                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+                        <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>Demoras</span>
+                        <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 800 }}>{incidents.demora}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+                        <span style={{ fontSize: 11, color: '#f87171', fontWeight: 600 }}>Incidencias</span>
+                        <span style={{ fontSize: 11, color: '#f87171', fontWeight: 800 }}>{incidents.incidencia}</span>
+                      </div>
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
-                      <span style={{ fontSize: 11, color: '#f87171', fontWeight: 600 }}>Incidencias</span>
-                      <span style={{ fontSize: 11, color: '#f87171', fontWeight: 800 }}>{incidents.incidencia}</span>
-                    </div>
-                  </div>
-                  {incidents.total > 0 && (
-                    <button
-                      style={{ marginTop: 10, width: '100%', padding: '5px 0', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, color: '#f87171', fontSize: 11, fontWeight: 700, cursor: 'pointer', letterSpacing: '0.04em' }}
-                      onClick={() => setShowIncidentsModal(true)}
-                    >
-                      Ver →
-                    </button>
-                  )}
-                </div>
-              )}
-              {/* ─────────────────────────────────────────────────────────── */}
+                  </>
+                )}
+                <button
+                  style={{ marginTop: 10, width: '100%', padding: '5px 0', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, color: '#f87171', fontSize: 11, fontWeight: 700, cursor: 'pointer', letterSpacing: '0.04em' }}
+                  onClick={() => setShowIncidentsModal(true)}
+                >
+                  Ver →
+                </button>
+              </div>
               {/* ─────────────────────────────────────────────────────────── */}
 
             </div>

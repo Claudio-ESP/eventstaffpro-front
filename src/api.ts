@@ -299,6 +299,24 @@ export async function adminListEvents(token: string): Promise<EventItem[]> {
   return ((res.events ?? res.rows ?? res.data ?? []) as EventItem[])
 }
 
+// ── Incidents (admin read) ────────────────────────────────────────────────────
+export interface IncidentRow {
+  incidentid: string
+  eventid: string
+  shiftid: string
+  staffid: string
+  type: string        // 'DEMORA' | 'INCIDENCIA'
+  message: string
+  created_at: string
+}
+
+// Backend: action="list-incidents" with { eventId } → { incidents: IncidentRow[] }
+// The admin Edge Function uses service_role which bypasses RLS on the incidents table.
+export async function adminListIncidents(token: string, eventId: string): Promise<IncidentRow[]> {
+  const res = await adminPost(token, { action: 'list-incidents', eventId })
+  return ((res.incidents ?? res.rows ?? res.data ?? []) as IncidentRow[])
+}
+
 export interface Assignment {
   assignmentid: string
   eventid: string
